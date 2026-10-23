@@ -118,13 +118,14 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
     async with httpx.AsyncClient(timeout=14.0) as client:
         # Case A: Google Gemini endpoint (supports direct fast generateContent and OpenAI proxy)
         if is_gemini:
-            # Model candidates to try
-            model_candidates = []
-            if settings.MODEL_NAME and not settings.MODEL_NAME.startswith("gpt"):
-                model_candidates.append(settings.MODEL_NAME)
-            for fallback in ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-3.8-flash"]:
-                if fallback not in model_candidates:
-                    model_candidates.append(fallback)
+            # Sanitize model name: Google AI Studio strictly requires gemini-3.8-flash
+            target_model = settings.MODEL_NAME
+            if not target_model or "gpt" in target_model.lower() or target_model.startswith("gemini-1.") or target_model.startswith("gemini-2."):
+                target_model = "gemini-3.8-flash"
+
+            model_candidates = [target_model]
+            if "gemini-3.8-flash" not in model_candidates:
+                model_candidates.append("gemini-3.8-flash")
 
             native_success = False
             for m in model_candidates:
