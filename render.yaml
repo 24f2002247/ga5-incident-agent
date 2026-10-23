@@ -14,8 +14,8 @@ services:
       - key: MODEL_API_KEY
         sync: false
       - key: MODEL_BASE_URL
-        value: https://api.openai.com/v1
+        value: https://generativelanguage.googleapis.com/v1beta/openai
       - key: MODEL_NAME
-        value: gpt-4o-mini
+        value: gemini-1.5-flash
       - key: ENVIRONMENT
         value: production
