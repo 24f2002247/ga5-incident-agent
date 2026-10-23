@@ -121,9 +121,8 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
         if is_gemini:
             # Try high-availability models with automatic fallback on 503 high demand
             model_candidates = [
-                "gemini-3.8-flash-lite",
                 "gemini-3.8-flash",
-                "gemini-3.8-pro",
+                "gemini-flash",
             ]
             if settings.MODEL_NAME and settings.MODEL_NAME not in model_candidates and not settings.MODEL_NAME.startswith("gpt") and not settings.MODEL_NAME.startswith("gemini-1.") and not settings.MODEL_NAME.startswith("gemini-2."):
                 model_candidates.insert(0, settings.MODEL_NAME)
