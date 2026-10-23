@@ -1044,3 +1044,50 @@ def test_generate_heuristic_plan_resilience():
     assert 1 <= len(plan.diagnostics) <= req.policy.maximumDiagnostics
     assert plan.planned_effect_tool in req.policy.effectTools
 
+
+# 30. Waiting response contains actionLog, receiptLog, tracestate, and no effect tools
+@patch("app.state_machine.plan_incident")
+def test_waiting_response_action_receipt_log_and_no_effect_tools(mock_plan, client):
+    mock_plan.return_value = ModelPlanResult(
+        root_cause="database_pool_exhaustion",
+        evidence=["ev_pool_exhaust", "ev_timeout"],
+        diagnostics=[
+            {"toolName": "query_db_pool", "arguments": {"service": "auth-gateway"}, "evidence": ["ev_pool_exhaust"]},
+        ],
+        planned_effect_tool="page_service_owner",
+        planned_effect_arguments={"service": "auth-gateway"},
+        model_name="gpt-4o-mini",
+    )
+
+    req = make_sample_request("run_logs_waiting_001")
+    req["sensitive"] = {"accessToken": "secret-super-token-123", "privateNote": "Confidential internal note"}
+    headers = {
+        "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        "tracestate": "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7",
+    }
+    res = client.post("/v2/incidents", json=req, headers=headers)
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["status"] == "waiting"
+    assert "actionLog" in data
+    assert "receiptLog" in data
+    assert isinstance(data["actionLog"], list)
+    assert len(data["actionLog"]) == 1
+    assert data["receiptLog"] == []
+
+    # Check tracestate preserved
+    assert data["dispatches"][0]["tracestate"] == "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7"
+    assert data["actionLog"][0]["tracestate"] == "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7"
+
+    # Verify no effect tools dispatched
+    for d in data["dispatches"]:
+        assert d["phase"] == "diagnostic"
+        assert d["toolName"] != "page_service_owner"
+        assert d["toolName"] != "rollback_deployment"
+
+    # Verify sensitive material not in arguments or text
+    body_text = json.dumps(data)
+    assert "secret-super-token-123" not in body_text
+    assert "Confidential internal note" not in body_text
+

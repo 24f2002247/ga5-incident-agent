@@ -32,7 +32,7 @@ from app.trace_builder import build_otlp_trace
 logger = logging.getLogger("app.state_machine")
 
 
-def build_action_log(dispatches: List[DispatchRecord]) -> List[Dict[str, Any]]:
+def build_action_log(dispatches: List[DispatchRecord], tracestate: Optional[str] = None) -> List[Dict[str, Any]]:
     """Builds the exact actionLog array of dispatches as originally issued."""
     log = []
     for d in sorted(dispatches, key=lambda x: x.issuance_order):
@@ -46,6 +46,8 @@ def build_action_log(dispatches: List[DispatchRecord]) -> List[Dict[str, Any]]:
             "attempt": d.attempt,
             "traceparent": d.traceparent,
         }
+        if tracestate:
+            item["tracestate"] = tracestate
         if d.approval_id:
             item["approvalId"] = d.approval_id
         if d.approval_nonce:
@@ -90,10 +92,10 @@ def format_run_response(run: RunRecord) -> Dict[str, Any]:
         "rootCause": run.diagnosis_root_cause,
         "evidence": evidence_list,
     }
+    action_log = build_action_log(run.dispatches, tracestate=run.tracestate)
+    receipt_log = build_receipt_log(run.receipts)
 
     if run.status in ("completed", "failed"):
-        action_log = build_action_log(run.dispatches)
-        receipt_log = build_receipt_log(run.receipts)
         otlp = build_otlp_trace(run, run.dispatches, run.receipts, run.approvals)
         suppressed = json.loads(run.suppressed_json)
 
@@ -125,6 +127,8 @@ def format_run_response(run: RunRecord) -> Dict[str, Any]:
             "attempt": d.attempt,
             "traceparent": d.traceparent,
         }
+        if run.tracestate:
+            item["tracestate"] = run.tracestate
         if d.approval_id:
             item["approvalId"] = d.approval_id
         if d.approval_nonce:
@@ -148,6 +152,8 @@ def format_run_response(run: RunRecord) -> Dict[str, Any]:
         "diagnosis": diagnosis,
         "dispatches": dispatches_data,
         "approvals": approvals_data,
+        "actionLog": action_log,
+        "receiptLog": receipt_log,
     }
 
 

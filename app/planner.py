@@ -67,6 +67,83 @@ def preprocess_transcript(transcript: str, service: str) -> str:
     return "\n".join(selected)
 
 
+def sanitize_arguments(
+    args: Dict[str, Any],
+    do_not_export: Optional[List[str]] = None,
+    sensitive_obj: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Recursively removes any keys or values matching sensitive/doNotExport items."""
+    sensitive_keys = {k.lower() for k in (do_not_export or [])}
+    sensitive_keys.update({
+        "accesstoken", "privatenote", "authorization", "secret", "password", "token", "apikey",
+        "access_token", "private_note", "api_key"
+    })
+
+    sensitive_values = set()
+    if sensitive_obj and isinstance(sensitive_obj, dict):
+        for k, v in sensitive_obj.items():
+            sensitive_keys.add(k.lower())
+            if isinstance(v, str) and len(v.strip()) > 2:
+                sensitive_values.add(v.strip().lower())
+
+    cleaned = {}
+    for k, v in args.items():
+        if k.lower() in sensitive_keys:
+            continue
+        if isinstance(v, str) and v.strip().lower() in sensitive_values:
+            continue
+        if isinstance(v, dict):
+            cleaned[k] = sanitize_arguments(v, do_not_export, sensitive_obj)
+        else:
+            cleaned[k] = v
+    return cleaned
+
+
+def derive_case_arguments(
+    tool_name: str,
+    catalog_tools: Dict[str, ToolCatalogItem],
+    req: IncidentRequest,
+    raw_args: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Derives exact case-specific arguments for a tool from incident details and inputSchema."""
+    tool_obj = catalog_tools.get(tool_name)
+    schema = (tool_obj.inputSchema if tool_obj else None) or {}
+    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    required = schema.get("required", []) if isinstance(schema, dict) else []
+
+    args = dict(raw_args or {})
+    transcript = req.incident.transcript
+
+    # Populate service if property exists or if empty
+    for prop_name in properties.keys():
+        prop_lower = prop_name.lower()
+        if prop_lower in ("service", "servicename", "target_service", "targetservice") and prop_name not in args:
+            args[prop_name] = req.incident.service
+        elif prop_lower in ("namespace",) and prop_name not in args:
+            m = re.search(r"namespace[:\s=]+([a-zA-Z0-9_\-]+)", transcript, re.IGNORECASE)
+            args[prop_name] = m.group(1) if m else "default"
+        elif prop_lower in ("cluster", "region") and prop_name not in args:
+            m = re.search(r"(?:cluster|region)[:\s=]+([a-zA-Z0-9_\-]+)", transcript, re.IGNORECASE)
+            args[prop_name] = m.group(1) if m else "prod-us-east-1"
+        elif prop_lower in ("version", "targetversion") and prop_name not in args:
+            m = re.search(r"v\d+\.\d+(?:\.\d+)?", transcript)
+            args[prop_name] = m.group(0) if m else "v1.0.0"
+
+    for req_field in required:
+        if req_field not in args:
+            if req_field.lower() in ("service", "target"):
+                args[req_field] = req.incident.service
+            elif req_field.lower() in ("reason",):
+                args[req_field] = req.incident.title
+            else:
+                args[req_field] = req.incident.service
+
+    if not args:
+        args = {"service": req.incident.service}
+
+    return sanitize_arguments(args, req.policy.doNotExport, req.sensitive)
+
+
 class ModelPlanResult:
     def __init__(
         self,
@@ -95,7 +172,8 @@ def build_planner_prompt(req: IncidentRequest) -> tuple[str, str]:
         "CRITICAL RULES:\n"
         "1. rootCause MUST be chosen EXACTLY from the provided allowedRootCauses list.\n"
         "2. evidence MUST contain between 2 and 4 unique evidence IDs copied verbatim from lines in the transcript (lines start with [id]).\n"
-        "3. diagnostics MUST be a list of 1 to maximumDiagnostics diagnostic tool calls from the catalog. Do not call unneeded tools.\n"
+        "3. diagnostics MUST be a list of 1 to maximumDiagnostics diagnostic tool calls drawn ONLY from diagnosticCatalog. "
+        "NEVER call an effect tool or destructive tool in diagnostics!\n"
         "4. Each diagnostic call must include: toolName, arguments (incident-specific), and evidence (a non-empty list of evidence IDs citing at least one of the diagnosis evidence IDs).\n"
         "5. plannedEffect: Choose exactly one tool from effectTools with its justified arguments. "
         "IMPORTANT: If the transcript or evidence shows the service is already at its permitted scaling limit, page the owner instead of scaling!\n"
@@ -113,14 +191,20 @@ def build_planner_prompt(req: IncidentRequest) -> tuple[str, str]:
         "}"
     )
 
-    # Sanitize tools: names, descriptions, input schemas
-    tools_summary = []
+    effect_tools_set = set(req.policy.effectTools or []) | set(req.policy.approvalRequiredFor or [])
+
+    diag_tools_summary = []
+    effect_tools_summary = []
     for tool in req.toolCatalog:
-        tools_summary.append({
+        summary_item = {
             "name": tool.name,
             "description": tool.description,
             "inputSchema": tool.inputSchema,
-        })
+        }
+        if tool.name in effect_tools_set:
+            effect_tools_summary.append(summary_item)
+        else:
+            diag_tools_summary.append(summary_item)
 
     # Preprocess transcript to guarantee fast sub-second inference
     condensed_transcript = preprocess_transcript(req.incident.transcript, req.incident.service)
@@ -132,7 +216,8 @@ def build_planner_prompt(req: IncidentRequest) -> tuple[str, str]:
         "severity": req.incident.severity,
         "allowedRootCauses": req.incident.allowedRootCauses,
         "transcript": condensed_transcript,
-        "toolCatalog": tools_summary,
+        "diagnosticCatalog": diag_tools_summary,
+        "effectCatalog": effect_tools_summary,
         "policy": {
             "maximumDiagnostics": req.policy.maximumDiagnostics,
             "effectTools": req.policy.effectTools,
@@ -199,12 +284,15 @@ def generate_heuristic_plan(req: IncidentRequest, model_name: str = "gemini-2.0-
         if eid not in final_eids:
             final_eids.append(eid)
 
-    # 4. Select minimal diagnostics from catalog (1 to maximumDiagnostics)
+    # 4. STRICT SEPARATION: Select minimal diagnostics ONLY from non-effect catalog tools
+    effect_tools_set = set(req.policy.effectTools or []) | set(req.policy.approvalRequiredFor or [])
+    diagnostic_catalog = [t for t in (req.toolCatalog or []) if t.name not in effect_tools_set]
+    diagnostic_tools_map = {t.name: t for t in diagnostic_catalog}
+
     max_diag = req.policy.maximumDiagnostics or 1
-    catalog = req.toolCatalog or []
     selected_diagnostics = []
 
-    for tool in catalog:
+    for tool in diagnostic_catalog:
         tool_name = tool.name
         matches_tool = any(t in tool_name.lower() or t in tool.description.lower() for t in cause_tokens)
         if matches_tool:
@@ -212,16 +300,18 @@ def generate_heuristic_plan(req: IncidentRequest, model_name: str = "gemini-2.0-
             if len(selected_diagnostics) >= max_diag:
                 break
 
-    if not selected_diagnostics and catalog:
-        selected_diagnostics = catalog[:max_diag]
+    if not selected_diagnostics and diagnostic_catalog:
+        selected_diagnostics = diagnostic_catalog[:max_diag]
 
     diagnostics_plan = []
-    for tool in selected_diagnostics:
-        args = {"service": req.incident.service}
+    for idx, tool in enumerate(selected_diagnostics):
+        args = derive_case_arguments(tool.name, diagnostic_tools_map, req)
+        # Each diagnostic cites a valid diagnosis evidence ID
+        cite_eid = final_eids[idx % len(final_eids)] if final_eids else "ev_unknown"
         diagnostics_plan.append({
             "toolName": tool.name,
             "arguments": args,
-            "evidence": [final_eids[0]] if final_eids else [],
+            "evidence": [cite_eid],
         })
 
     # 5. Select planned effect
@@ -231,7 +321,7 @@ def generate_heuristic_plan(req: IncidentRequest, model_name: str = "gemini-2.0-
             "cannot scale", "max instances", "already at max"
         ]
     )
-    effect_tools = req.policy.effectTools or [t.name for t in req.toolCatalog]
+    effect_tools = req.policy.effectTools or [t.name for t in req.toolCatalog if t.name in effect_tools_set]
     effect_tool = None
     effect_args = {"service": req.incident.service}
 
@@ -257,6 +347,7 @@ def generate_heuristic_plan(req: IncidentRequest, model_name: str = "gemini-2.0-
     if not effect_tool and effect_tools:
         effect_tool = effect_tools[0]
 
+    effect_args = sanitize_arguments(effect_args, req.policy.doNotExport, req.sensitive)
     return ModelPlanResult(
         root_cause=best_cause,
         evidence=final_eids,
@@ -420,8 +511,11 @@ def parse_and_validate_plan(
     if len(valid_evidence) > 4:
         valid_evidence = valid_evidence[:4]
 
-    # Validate diagnostics
-    catalog_tools = {t.name: t for t in req.toolCatalog}
+    # STRICT SEPARATION: Diagnostics vs Effects
+    effect_tools_set = set(req.policy.effectTools or []) | set(req.policy.approvalRequiredFor or [])
+    diagnostic_catalog = [t for t in req.toolCatalog if t.name not in effect_tools_set]
+    diagnostic_tools_map = {t.name: t for t in diagnostic_catalog}
+
     raw_diagnostics = parsed.get("diagnostics", [])
     if not isinstance(raw_diagnostics, list):
         raw_diagnostics = []
@@ -432,17 +526,14 @@ def parse_and_validate_plan(
         if not isinstance(d, dict):
             continue
         tool_name = str(d.get("toolName", "")).strip()
-        if tool_name not in catalog_tools:
+        # MUST BE in diagnostic catalog and NEVER in effect_tools_set!
+        if tool_name not in diagnostic_tools_map or tool_name in effect_tools_set:
             continue
-        args = d.get("arguments", {})
-        if not isinstance(args, dict):
-            args = {}
+        raw_args = d.get("arguments", {})
+        if not isinstance(raw_args, dict):
+            raw_args = {}
 
-        # Ensure service parameter is provided if schema expects it or if empty
-        tool_obj = catalog_tools[tool_name]
-        schema_props = tool_obj.inputSchema.get("properties", {}) if isinstance(tool_obj.inputSchema, dict) else {}
-        if ("service" in schema_props or not args) and "service" not in args:
-            args["service"] = req.incident.service
+        args = derive_case_arguments(tool_name, diagnostic_tools_map, req, raw_args)
 
         # Evidence cited by dispatch
         d_evidence = d.get("evidence", [])
@@ -462,12 +553,13 @@ def parse_and_validate_plan(
         if len(validated_diagnostics) >= max_diag:
             break
 
-    # If no diagnostic was validly selected, pick the first catalog tool as minimal diagnostic
-    if not validated_diagnostics and req.toolCatalog:
-        first_tool = req.toolCatalog[0]
+    # If no diagnostic was validly selected, pick the first non-effect tool as minimal diagnostic
+    if not validated_diagnostics and diagnostic_catalog:
+        first_tool = diagnostic_catalog[0]
+        args = derive_case_arguments(first_tool.name, diagnostic_tools_map, req)
         validated_diagnostics.append({
             "toolName": first_tool.name,
-            "arguments": {"service": req.incident.service},
+            "arguments": args,
             "evidence": [valid_evidence[0]] if valid_evidence else [],
         })
 
@@ -490,18 +582,18 @@ def parse_and_validate_plan(
         ]
     )
 
-    effect_tools = req.policy.effectTools or [t.name for t in req.toolCatalog]
+    available_effects = req.policy.effectTools or [t.name for t in req.toolCatalog if t.name in effect_tools_set]
     if scaling_limit_hit:
         # Prefer page_service_owner or alert_owner if available in effectTools
         for candidate in ["page_service_owner", "page_owner", "alert_owner", "escalate_to_owner"]:
-            if candidate in effect_tools:
+            if candidate in available_effects:
                 effect_tool = candidate
                 effect_args = {"service": req.incident.service, "reason": "Scaling limit reached"}
                 break
 
-    if effect_tool not in effect_tools:
-        if effect_tools:
-            effect_tool = effect_tools[0]
+    if effect_tool not in available_effects:
+        if available_effects:
+            effect_tool = available_effects[0]
             effect_args = {"service": req.incident.service}
         else:
             effect_tool = None
@@ -509,6 +601,7 @@ def parse_and_validate_plan(
     elif "service" not in effect_args:
         effect_args["service"] = req.incident.service
 
+    effect_args = sanitize_arguments(effect_args, req.policy.doNotExport, req.sensitive)
     resolved_model = model_name or settings.MODEL_NAME or "gpt-4o-mini"
     return ModelPlanResult(
         root_cause=root_cause,

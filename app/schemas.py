@@ -63,6 +63,7 @@ class DispatchItem(BaseModel):
     evidence: List[str]
     attempt: int
     traceparent: str
+    tracestate: Optional[str] = None
     approvalId: Optional[str] = None
     approvalNonce: Optional[str] = None
 
@@ -109,6 +110,8 @@ class WaitingResponse(BaseModel):
     diagnosis: DiagnosisData
     dispatches: List[DispatchItem] = Field(default_factory=list)
     approvals: List[ApprovalItem] = Field(default_factory=list)
+    actionLog: List[Dict[str, Any]] = Field(default_factory=list)
+    receiptLog: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class TerminalResponse(BaseModel):
