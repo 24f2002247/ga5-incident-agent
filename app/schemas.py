@@ -126,4 +126,4 @@ class TerminalResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-    version: str = "2.0.7"
+    version: str = "2.0.8"

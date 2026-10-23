@@ -57,7 +57,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    return {"status": "ok", "version": "2.0.7"}
+    return {"status": "ok", "version": "2.0.8"}
 
 
 @app.get("/debug/models")
@@ -66,11 +66,12 @@ async def debug_models():
     if not api_key:
         return {"error": "No api key"}
     import httpx
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}")
-        data = r.json()
-        model_names = [m.get("name") for m in data.get("models", [])]
-        return {"status": r.status_code, "models": model_names}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}")
+            return {"status": r.status_code, "text": r.text[:2000]}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.post("/v2/incidents")
