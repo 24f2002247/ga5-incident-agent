@@ -117,31 +117,43 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
     used_model_name = settings.MODEL_NAME or "gpt-4o-mini"
 
     async with httpx.AsyncClient(timeout=14.0) as client:
-        # Case A: Google Gemini endpoint (direct generateContent on gemini-3.8-flash)
+        # Case A: Google Gemini endpoint (direct generateContent on supported models)
         if is_gemini:
-            gemini_model = "gemini-3.8-flash"
-            native_url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={api_key}"
-            native_body = {
-                "systemInstruction": {"parts": [{"text": system_prompt}]},
-                "contents": [{"parts": [{"text": user_prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.1,
-                    "responseMimeType": "application/json",
-                },
-            }
-            try:
-                resp = await client.post(native_url, json=native_body)
-                if resp.status_code != 200:
-                    error_text = resp.text[:500]
-                    raise RuntimeError(f"Gemini API error ({resp.status_code}): {error_text}")
-                data = resp.json()
-                content = data["candidates"][0]["content"]["parts"][0]["text"]
-                used_model_name = gemini_model
-            except httpx.TimeoutException:
-                raise RuntimeError("Gemini model request timed out after 14 seconds")
-            except Exception as e:
-                err_msg = str(e) or type(e).__name__
-                raise RuntimeError(f"Gemini model request failed: {err_msg}")
+            candidate_models = [
+                "gemini-flash-latest",
+                "gemini-flash-lite-latest",
+                "gemini-3.5-flash",
+                "gemini-3.8-flash",
+            ]
+            last_err = None
+            for m in candidate_models:
+                native_url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_key}"
+                native_body = {
+                    "systemInstruction": {"parts": [{"text": system_prompt}]},
+                    "contents": [{"parts": [{"text": user_prompt}]}],
+                    "generationConfig": {
+                        "temperature": 0.1,
+                        "responseMimeType": "application/json",
+                    },
+                }
+                try:
+                    resp = await client.post(native_url, json=native_body)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        content = data["candidates"][0]["content"]["parts"][0]["text"]
+                        used_model_name = m
+                        break
+                    elif resp.status_code in (404, 503):
+                        logger.warning("Gemini model %s returned %d, trying fallback...", m, resp.status_code)
+                        continue
+                    else:
+                        resp.raise_for_status()
+                except Exception as e:
+                    last_err = str(e)
+                    continue
+
+            if not content:
+                raise RuntimeError(last_err or "Failed to get plan from Gemini models")
 
         # Case B: Standard OpenAI-compatible provider (OpenAI, Groq, OpenRouter, DeepSeek)
         else:
