@@ -95,6 +95,14 @@ def test_health_check(client):
     assert "version" in data
 
 
+def test_root_endpoint(client):
+    res = client.get("/")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ok"
+    assert "endpoints" in data
+
+
 # 2. Unsupported profile
 def test_unsupported_profile(client):
     req = make_sample_request()

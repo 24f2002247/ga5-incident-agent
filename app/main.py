@@ -56,9 +56,24 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 
+@app.get("/")
+def root():
+    return {
+        "status": "ok",
+        "service": "ga5-incident-agent",
+        "version": "2.1.4",
+        "endpoints": [
+            "/health",
+            "/v2/incidents",
+            "/v2/incidents/{runId}/receipts",
+            "/v2/incidents/{runId}",
+        ],
+    }
+
+
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    return {"status": "ok", "version": "2.1.3"}
+    return {"status": "ok", "version": "2.1.4"}
 
 
 @app.post("/v2/incidents")
