@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import Base, engine, get_db
 from app.schemas import (
     HealthResponse,
@@ -57,7 +58,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    return {"status": "ok", "version": "2.0.8"}
+    return {"status": "ok", "version": "2.0.9"}
 
 
 @app.get("/debug/models")
