@@ -5,7 +5,7 @@ from app.database import Base
 
 
 class RunRecord(Base):
-    __tablename__ = "runs"
+    __tablename__ = "incident_runs"
 
     run_id = Column(String(128), primary_key=True, index=True)
     canonical_fingerprint = Column(String(64), nullable=False, index=True)
@@ -46,10 +46,10 @@ class RunRecord(Base):
 
 
 class DispatchRecord(Base):
-    __tablename__ = "dispatches"
+    __tablename__ = "incident_dispatches"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    run_id = Column(String(128), ForeignKey("runs.run_id"), nullable=False, index=True)
+    run_id = Column(String(128), ForeignKey("incident_runs.run_id"), nullable=False, index=True)
     action_id = Column(String(128), nullable=False, index=True)
     call_id = Column(String(128), nullable=False)
     phase = Column(String(32), nullable=False)  # diagnostic, effect
@@ -69,10 +69,10 @@ class DispatchRecord(Base):
 
 
 class ReceiptRecord(Base):
-    __tablename__ = "receipts"
+    __tablename__ = "incident_receipts"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    run_id = Column(String(128), ForeignKey("runs.run_id"), nullable=False, index=True)
+    run_id = Column(String(128), ForeignKey("incident_runs.run_id"), nullable=False, index=True)
     receipt_id = Column(String(128), nullable=False, index=True)
     canonical_fingerprint = Column(String(64), nullable=False)
     receipt_type = Column(String(32), nullable=False)  # outcome, approval
@@ -96,10 +96,10 @@ class ReceiptRecord(Base):
 
 
 class ApprovalRecord(Base):
-    __tablename__ = "approvals"
+    __tablename__ = "incident_approvals"
 
     approval_id = Column(String(128), primary_key=True, index=True)
-    run_id = Column(String(128), ForeignKey("runs.run_id"), nullable=False, index=True)
+    run_id = Column(String(128), ForeignKey("incident_runs.run_id"), nullable=False, index=True)
     action_id = Column(String(128), nullable=False)
     tool_name = Column(String(128), nullable=False)
     arguments_digest = Column(String(64), nullable=False)
