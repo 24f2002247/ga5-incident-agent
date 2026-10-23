@@ -113,8 +113,9 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
 
     # Automatically adapt model name if using Google Gemini OpenAI endpoint
     model_name = settings.MODEL_NAME
-    if "googleapis.com" in base_url and (not model_name or "gpt" in model_name.lower()):
-        model_name = "gemini-1.5-flash"
+    if "googleapis.com" in base_url:
+        if not model_name or "gpt" in model_name.lower() or model_name in ("gemini-1.5-flash", "gemini-2.0-flash"):
+            model_name = "gemini-2.5-flash"
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -136,7 +137,7 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
             resp.raise_for_status()
             data = resp.json()
         except httpx.HTTPStatusError as e:
-            error_body = e.response.text[:300]
+            error_body = e.response.text[:1000]
             logger.error("Model HTTP error: %s - Body: %s", str(e), error_body)
             raise RuntimeError(f"Model provider request failed ({e.response.status_code}): {error_body}")
         except Exception as e:

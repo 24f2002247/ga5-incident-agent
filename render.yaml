@@ -16,6 +16,6 @@ services:
       - key: MODEL_BASE_URL
         value: https://generativelanguage.googleapis.com/v1beta/openai
       - key: MODEL_NAME
-        value: gemini-1.5-flash
+        value: gemini-2.5-flash
       - key: ENVIRONMENT
         value: production

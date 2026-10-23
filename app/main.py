@@ -57,7 +57,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    return {"status": "ok", "version": "2.0.1"}
+    return {"status": "ok", "version": "2.0.2"}
 
 
 @app.post("/v2/incidents")
