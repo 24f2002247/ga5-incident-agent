@@ -117,9 +117,9 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
     used_model_name = settings.MODEL_NAME or "gpt-4o-mini"
 
     async with httpx.AsyncClient(timeout=14.0) as client:
-        # Case A: Google Gemini endpoint (direct generateContent on gemini-2.5-flash)
+        # Case A: Google Gemini endpoint (direct generateContent on gemini-3.8-flash)
         if is_gemini:
-            gemini_model = "gemini-2.5-flash"
+            gemini_model = "gemini-3.8-flash"
             native_url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={api_key}"
             native_body = {
                 "systemInstruction": {"parts": [{"text": system_prompt}]},
