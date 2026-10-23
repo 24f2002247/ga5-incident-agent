@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = Field(default="sqlite:///./incident_agent.db")
     MODEL_API_KEY: str = Field(default="")
     MODEL_BASE_URL: str = Field(default="https://api.openai.com/v1")
-    MODEL_NAME: str = Field(default="gpt-4o-mini")
+    MODEL_NAME: str = Field(default="gemini-3.8-flash")
     PORT: int = Field(default=8000)
     ENVIRONMENT: str = Field(default="production")
 

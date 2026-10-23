@@ -114,8 +114,8 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
     # Automatically adapt model name if using Google Gemini OpenAI endpoint
     model_name = settings.MODEL_NAME
     if "googleapis.com" in base_url:
-        if not model_name or "gpt" in model_name.lower() or model_name in ("gemini-1.5-flash", "gemini-2.0-flash"):
-            model_name = "gemini-2.5-flash"
+        if not model_name or "gpt" in model_name.lower() or model_name.startswith("gemini-1.") or model_name.startswith("gemini-2."):
+            model_name = "gemini-3.8-flash"
 
     headers = {
         "Authorization": f"Bearer {api_key}",
