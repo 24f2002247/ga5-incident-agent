@@ -125,15 +125,22 @@ def build_otlp_trace(
         key=lambda act_id: min(d.issuance_order for d in dispatches_by_action[act_id]),
     )
 
+    diagnostic_actions = [
+        act_id for act_id in sorted_actions if dispatches_by_action[act_id][0].phase == "diagnostic"
+    ]
+    effect_actions = [
+        act_id for act_id in sorted_actions if dispatches_by_action[act_id][0].phase == "effect"
+    ]
+
     action_offset = 250_000_000
-    for act_id in sorted_actions:
+
+    # 4. Diagnostic Actions
+    for act_id in diagnostic_actions:
         action_dispatches = sorted(dispatches_by_action[act_id], key=lambda d: d.attempt)
         first_d = action_dispatches[0]
         tool_name = first_d.tool_name
         logical_span_id = get_logical_tool_span_id(trace_id, act_id)
-
-        if first_d.phase == "diagnostic":
-            diagnostic_tool_span_ids.append(logical_span_id)
+        diagnostic_tool_span_ids.append(logical_span_id)
 
         # 4a. INTERNAL execute_tool <toolName>
         logical_attrs = [
@@ -278,6 +285,107 @@ def build_otlp_trace(
             "status": {"code": 1},
         }
         spans.append(gate_span)
+        action_offset += 20_000_000
+
+    # 7. Effect Actions (occur after join and approval_gate)
+    for act_id in effect_actions:
+        action_dispatches = sorted(dispatches_by_action[act_id], key=lambda d: d.attempt)
+        first_d = action_dispatches[0]
+        tool_name = first_d.tool_name
+        logical_span_id = get_logical_tool_span_id(trace_id, act_id)
+
+        # 7a. INTERNAL execute_tool <toolName>
+        logical_attrs = [
+            make_attr("ga5.run.id", run_id),
+            make_attr("ga5.public.marker", public_marker),
+            make_attr("ga5.action.id", act_id),
+            make_attr("action.id", act_id),
+            make_attr("gen_ai.tool.name", tool_name),
+            make_attr("tool.name", tool_name),
+            make_attr("gen_ai.tool.call.id", first_d.call_id),
+            make_attr("gen_ai.operation.name", "execute_tool"),
+        ]
+        logical_span = {
+            "traceId": trace_id,
+            "spanId": logical_span_id,
+            "parentSpanId": agent_span_id,
+            "name": f"execute_tool {tool_name}",
+            "kind": 1,  # INTERNAL
+            "startTimeUnixNano": str(base_ns + action_offset),
+            "endTimeUnixNano": str(base_ns + action_offset + 100_000_000),
+            "attributes": logical_attrs,
+            "status": {"code": 1},
+        }
+        spans.append(logical_span)
+
+        # 7b. CLIENT POST tool/<toolName> for physical attempt
+        attempt_offset = action_offset + 10_000_000
+        for d in action_dispatches:
+            client_span_id = d.client_span_id.lower()
+            attempt_num = d.attempt
+            receipt = receipts_by_action_attempt.get((act_id, attempt_num))
+
+            client_attrs = [
+                make_attr("ga5.run.id", run_id),
+                make_attr("ga5.public.marker", public_marker),
+                make_attr("ga5.action.id", act_id),
+                make_attr("action.id", act_id),
+                make_attr("ga5.attempt", attempt_num),
+                make_attr("http.request.method", "POST"),
+                make_attr("http.method", "POST"),
+                make_attr("http.request.resend_count", attempt_num - 1),
+                make_attr("http.resend_count", attempt_num - 1),
+            ]
+
+            span_status_code = 1
+            error_type = None
+
+            if receipt:
+                client_attrs.append(make_attr("ga5.receipt.id", receipt.receipt_id))
+                client_attrs.append(make_attr("ga5.receipt.nonce", receipt.nonce))
+                client_attrs.append(make_attr("receipt.id", receipt.receipt_id))
+                client_attrs.append(make_attr("receipt.nonce", receipt.nonce))
+                if receipt.status is not None:
+                    client_attrs.append(make_attr("http.response.status_code", receipt.status))
+                    client_attrs.append(make_attr("http.status_code", receipt.status))
+
+                if receipt.status == 503:
+                    span_status_code = 2
+                    error_type = "503"
+                elif receipt.status == 0 or receipt.error_type == "timeout":
+                    span_status_code = 2
+                    error_type = "timeout"
+                elif receipt.status and receipt.status >= 400:
+                    span_status_code = 2
+                    error_type = str(receipt.status)
+            else:
+                client_attrs.append(make_attr("ga5.receipt.id", "pending"))
+                client_attrs.append(make_attr("ga5.receipt.nonce", "pending"))
+                client_attrs.append(make_attr("receipt.id", "pending"))
+                client_attrs.append(make_attr("receipt.nonce", "pending"))
+
+            if error_type:
+                client_attrs.append(make_attr("error.type", error_type))
+
+            physical_span = {
+                "traceId": trace_id,
+                "spanId": client_span_id,
+                "parentSpanId": logical_span_id,
+                "name": f"POST tool/{tool_name}",
+                "kind": 3,  # CLIENT
+                "startTimeUnixNano": str(base_ns + attempt_offset),
+                "endTimeUnixNano": str(base_ns + attempt_offset + 40_000_000),
+                "attributes": client_attrs,
+                "status": {"code": span_status_code},
+            }
+            spans.append(physical_span)
+            attempt_offset += 45_000_000
+
+        action_offset += 120_000_000
+
+    # Ensure parent server and agent spans encompass all children
+    server_span["endTimeUnixNano"] = str(base_ns + action_offset + 50_000_000)
+    agent_span["endTimeUnixNano"] = str(base_ns + action_offset + 40_000_000)
 
     return {
         "resourceSpans": [

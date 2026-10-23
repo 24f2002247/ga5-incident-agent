@@ -1030,3 +1030,17 @@ def test_otlp_span_kinds_and_attributes(mock_plan, client):
     assert "error.type" not in att2_attrs
     assert att2_span["status"]["code"] == 1  # OK = 1
 
+
+# 29. Resilient heuristic analyzer test
+def test_generate_heuristic_plan_resilience():
+    from app.planner import generate_heuristic_plan
+    req = IncidentRequest.model_validate(make_sample_request("run_heuristic_001"))
+    plan = generate_heuristic_plan(req)
+
+    assert plan.root_cause in req.incident.allowedRootCauses
+    assert 2 <= len(plan.evidence) <= 4
+    for eid in plan.evidence:
+        assert f"[{eid}]" in req.incident.transcript
+    assert 1 <= len(plan.diagnostics) <= req.policy.maximumDiagnostics
+    assert plan.planned_effect_tool in req.policy.effectTools
+
