@@ -101,7 +101,8 @@ def build_planner_prompt(req: IncidentRequest) -> tuple[str, str]:
 async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
     """
     Executes exactly one planning call to the configured model provider.
-    Validates output strictly.
+    Validates output strictly. Supports OpenAI-compatible providers as well as
+    direct Google Gemini endpoints with automatic fallback.
     """
     api_key = settings.MODEL_API_KEY.strip()
     if not api_key:
@@ -109,48 +110,113 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
 
     system_prompt, user_prompt = build_planner_prompt(req)
     base_url = settings.MODEL_BASE_URL.rstrip("/")
-    url = f"{base_url}/chat/completions"
-
-    # Automatically adapt model name if using Google Gemini OpenAI endpoint
-    model_name = settings.MODEL_NAME
-    if "googleapis.com" in base_url:
-        if not model_name or "gpt" in model_name.lower() or model_name.startswith("gemini-1.") or model_name.startswith("gemini-2."):
-            model_name = "gemini-3.8-flash"
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-
-    body = {
-        "model": model_name,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.1,
-    }
-
-    async with httpx.AsyncClient(timeout=16.0) as client:
-        try:
-            resp = await client.post(url, headers=headers, json=body)
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPStatusError as e:
-            error_body = e.response.text[:1000]
-            logger.error("Model HTTP error: %s - Body: %s", str(e), error_body)
-            raise RuntimeError(f"Model provider request failed ({e.response.status_code}): {error_body}")
-        except Exception as e:
-            logger.error("Model request failed: %s", str(e))
-            raise RuntimeError(f"Model provider request failed: {str(e)}")
+    is_gemini = "googleapis.com" in base_url
 
     content = ""
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError):
-        raise ValueError("Unexpected response structure from model provider")
+    used_model_name = settings.MODEL_NAME or "gpt-4o-mini"
 
-    # Clean markdown if present
+    async with httpx.AsyncClient(timeout=14.0) as client:
+        # Case A: Google Gemini endpoint (supports direct fast generateContent and OpenAI proxy)
+        if is_gemini:
+            # Model candidates to try
+            model_candidates = []
+            if settings.MODEL_NAME and not settings.MODEL_NAME.startswith("gpt"):
+                model_candidates.append(settings.MODEL_NAME)
+            for fallback in ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash", "gemini-3.8-flash"]:
+                if fallback not in model_candidates:
+                    model_candidates.append(fallback)
+
+            native_success = False
+            for m in model_candidates:
+                native_url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_key}"
+                native_body = {
+                    "system_instruction": {"parts": [{"text": system_prompt}]},
+                    "contents": [{"parts": [{"text": user_prompt}]}],
+                    "generationConfig": {
+                        "temperature": 0.1,
+                        "response_mime_type": "application/json",
+                    },
+                }
+                try:
+                    resp = await client.post(native_url, json=native_body)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        content = data["candidates"][0]["content"]["parts"][0]["text"]
+                        used_model_name = m
+                        native_success = True
+                        break
+                    elif resp.status_code in (404, 503):
+                        logger.warning("Gemini native %s returned %d, trying next...", m, resp.status_code)
+                        continue
+                    else:
+                        resp.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    logger.warning("Gemini native %s error %d: %s", m, e.response.status_code, e.response.text[:200])
+                    continue
+                except Exception as e:
+                    logger.warning("Gemini native %s connection issue: %s", m, str(e))
+                    continue
+
+            # If native calls didn't succeed, fallback to OpenAI compatibility endpoint
+            if not native_success:
+                openai_url = f"{base_url}/chat/completions"
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
+                openai_body = {
+                    "model": model_candidates[0],
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.1,
+                }
+                try:
+                    resp = await client.post(openai_url, headers=headers, json=openai_body)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    content = data["choices"][0]["message"]["content"]
+                    used_model_name = model_candidates[0]
+                except httpx.HTTPStatusError as e:
+                    error_text = e.response.text[:500]
+                    raise RuntimeError(f"Gemini API error ({e.response.status_code}): {error_text}")
+                except httpx.TimeoutException:
+                    raise RuntimeError("Model request timed out after 14 seconds")
+                except Exception as e:
+                    err_msg = str(e) or type(e).__name__
+                    raise RuntimeError(f"Model request failed: {err_msg}")
+
+        # Case B: Standard OpenAI-compatible provider (OpenAI, Groq, OpenRouter, DeepSeek)
+        else:
+            url = f"{base_url}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            body = {
+                "model": used_model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.1,
+            }
+            try:
+                resp = await client.post(url, headers=headers, json=body)
+                resp.raise_for_status()
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"]
+            except httpx.HTTPStatusError as e:
+                error_text = e.response.text[:500]
+                raise RuntimeError(f"Model provider HTTP error ({e.response.status_code}): {error_text}")
+            except httpx.TimeoutException:
+                raise RuntimeError("Model request timed out after 14 seconds")
+            except Exception as e:
+                err_msg = str(e) or type(e).__name__
+                raise RuntimeError(f"Model provider request failed: {err_msg}")
+
+    # Clean markdown code blocks if present
     cleaned = content.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
@@ -160,9 +226,11 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
     try:
         parsed = json.loads(cleaned)
     except Exception as e:
-        raise ValueError(f"Failed to parse JSON response from model: {str(e)}")
+        raise ValueError(f"Failed to parse JSON response from model: {str(e)} - Raw: {cleaned[:200]}")
 
-    return parse_and_validate_plan(parsed, req)
+    plan_result = parse_and_validate_plan(parsed, req)
+    plan_result.model_name = used_model_name
+    return plan_result
 
 
 def parse_and_validate_plan(parsed: Dict[str, Any], req: IncidentRequest) -> ModelPlanResult:
