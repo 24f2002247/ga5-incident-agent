@@ -58,37 +58,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    return {"status": "ok", "version": "2.1.2"}
-
-
-@app.get("/debug/test-gemini")
-async def debug_test_gemini(model: str = "gemini-flash-latest"):
-    api_key = settings.MODEL_API_KEY.strip()
-    import httpx
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    body = {
-        "systemInstruction": {"parts": [{"text": "You are a helpful assistant. Return JSON."}]},
-        "contents": [{"parts": [{"text": "Return JSON: {\"status\": \"gemini_online\"}"}]}],
-        "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
-    }
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.post(url, json=body)
-            return {"status": r.status_code, "text": r.text}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/debug/all-models")
-async def debug_all_models():
-    api_key = settings.MODEL_API_KEY.strip()
-    import httpx
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(url)
-        data = r.json()
-        names = [m.get("name") for m in data.get("models", [])]
-        return {"names": names}
+    return {"status": "ok", "version": "2.1.3"}
 
 
 @app.post("/v2/incidents")

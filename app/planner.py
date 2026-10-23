@@ -120,10 +120,9 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
         # Case A: Google Gemini endpoint (direct generateContent on supported models)
         if is_gemini:
             candidate_models = [
-                "gemini-flash-latest",
                 "gemini-flash-lite-latest",
-                "gemini-3.5-flash",
-                "gemini-3.8-flash",
+                "gemini-3.6-flash",
+                "gemini-3-flash-preview",
             ]
             last_err = None
             for m in candidate_models:
