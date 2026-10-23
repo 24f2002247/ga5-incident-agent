@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -118,55 +119,24 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
     async with httpx.AsyncClient(timeout=14.0) as client:
         # Case A: Google Gemini endpoint (supports direct fast generateContent and OpenAI proxy)
         if is_gemini:
-            # Sanitize model name: Google AI Studio strictly requires gemini-3.8-flash
-            target_model = settings.MODEL_NAME
-            if not target_model or "gpt" in target_model.lower() or target_model.startswith("gemini-1.") or target_model.startswith("gemini-2."):
-                target_model = "gemini-3.8-flash"
+            # Try high-availability models with automatic fallback on 503 high demand
+            model_candidates = [
+                "gemini-3.8-flash-lite",
+                "gemini-3.8-flash",
+                "gemini-3.8-pro",
+            ]
+            if settings.MODEL_NAME and settings.MODEL_NAME not in model_candidates and not settings.MODEL_NAME.startswith("gpt") and not settings.MODEL_NAME.startswith("gemini-1.") and not settings.MODEL_NAME.startswith("gemini-2."):
+                model_candidates.insert(0, settings.MODEL_NAME)
 
-            model_candidates = [target_model]
-            if "gemini-3.8-flash" not in model_candidates:
-                model_candidates.append("gemini-3.8-flash")
-
-            native_success = False
+            last_err = None
             for m in model_candidates:
-                native_url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_key}"
-                native_body = {
-                    "system_instruction": {"parts": [{"text": system_prompt}]},
-                    "contents": [{"parts": [{"text": user_prompt}]}],
-                    "generationConfig": {
-                        "temperature": 0.1,
-                        "response_mime_type": "application/json",
-                    },
-                }
-                try:
-                    resp = await client.post(native_url, json=native_body)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        content = data["candidates"][0]["content"]["parts"][0]["text"]
-                        used_model_name = m
-                        native_success = True
-                        break
-                    elif resp.status_code in (404, 503):
-                        logger.warning("Gemini native %s returned %d, trying next...", m, resp.status_code)
-                        continue
-                    else:
-                        resp.raise_for_status()
-                except httpx.HTTPStatusError as e:
-                    logger.warning("Gemini native %s error %d: %s", m, e.response.status_code, e.response.text[:200])
-                    continue
-                except Exception as e:
-                    logger.warning("Gemini native %s connection issue: %s", m, str(e))
-                    continue
-
-            # If native calls didn't succeed, fallback to OpenAI compatibility endpoint
-            if not native_success:
                 openai_url = f"{base_url}/chat/completions"
                 headers = {
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 }
                 openai_body = {
-                    "model": model_candidates[0],
+                    "model": m,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
@@ -175,18 +145,30 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
                 }
                 try:
                     resp = await client.post(openai_url, headers=headers, json=openai_body)
+                    if resp.status_code == 503:
+                        logger.warning("Model %s returned 503 high demand, falling back to next model...", m)
+                        await asyncio.sleep(0.5)
+                        continue
                     resp.raise_for_status()
                     data = resp.json()
                     content = data["choices"][0]["message"]["content"]
-                    used_model_name = model_candidates[0]
+                    used_model_name = m
+                    break
                 except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 503:
+                        last_err = f"Gemini 503 ({m}): {e.response.text[:200]}"
+                        continue
                     error_text = e.response.text[:500]
                     raise RuntimeError(f"Gemini API error ({e.response.status_code}): {error_text}")
                 except httpx.TimeoutException:
-                    raise RuntimeError("Model request timed out after 14 seconds")
+                    last_err = f"Model {m} timed out"
+                    continue
                 except Exception as e:
-                    err_msg = str(e) or type(e).__name__
-                    raise RuntimeError(f"Model request failed: {err_msg}")
+                    last_err = f"Model {m} failed: {str(e)}"
+                    continue
+
+            if not content:
+                raise RuntimeError(last_err or "All Gemini models unavailable due to high demand")
 
         # Case B: Standard OpenAI-compatible provider (OpenAI, Groq, OpenRouter, DeepSeek)
         else:
