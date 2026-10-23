@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: ga5-incident-agent
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ga5-incident-db
+          property: connectionString
+      - key: MODEL_API_KEY
+        sync: false
+      - key: MODEL_BASE_URL
+        value: https://api.openai.com/v1
+      - key: MODEL_NAME
+        value: gpt-4o-mini
+      - key: ENVIRONMENT
+        value: production
+
+databases:
+  - name: ga5-incident-db
+    plan: free
