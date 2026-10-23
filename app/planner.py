@@ -117,57 +117,31 @@ async def plan_incident(req: IncidentRequest) -> ModelPlanResult:
     used_model_name = settings.MODEL_NAME or "gpt-4o-mini"
 
     async with httpx.AsyncClient(timeout=14.0) as client:
-        # Case A: Google Gemini endpoint (supports direct fast generateContent and OpenAI proxy)
+        # Case A: Google Gemini endpoint (direct generateContent on gemini-2.5-flash)
         if is_gemini:
-            # Try high-availability models with automatic fallback on 503 high demand
-            model_candidates = [
-                "gemini-3.8-flash",
-                "gemini-flash",
-            ]
-            if settings.MODEL_NAME and settings.MODEL_NAME not in model_candidates and not settings.MODEL_NAME.startswith("gpt") and not settings.MODEL_NAME.startswith("gemini-1.") and not settings.MODEL_NAME.startswith("gemini-2."):
-                model_candidates.insert(0, settings.MODEL_NAME)
-
-            last_err = None
-            for m in model_candidates:
-                openai_url = f"{base_url}/chat/completions"
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                }
-                openai_body = {
-                    "model": m,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
+            gemini_model = "gemini-2.5-flash"
+            native_url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={api_key}"
+            native_body = {
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": [{"parts": [{"text": user_prompt}]}],
+                "generationConfig": {
                     "temperature": 0.1,
-                }
-                try:
-                    resp = await client.post(openai_url, headers=headers, json=openai_body)
-                    if resp.status_code == 503:
-                        logger.warning("Model %s returned 503 high demand, falling back to next model...", m)
-                        await asyncio.sleep(0.5)
-                        continue
-                    resp.raise_for_status()
-                    data = resp.json()
-                    content = data["choices"][0]["message"]["content"]
-                    used_model_name = m
-                    break
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code == 503:
-                        last_err = f"Gemini 503 ({m}): {e.response.text[:200]}"
-                        continue
-                    error_text = e.response.text[:500]
-                    raise RuntimeError(f"Gemini API error ({e.response.status_code}): {error_text}")
-                except httpx.TimeoutException:
-                    last_err = f"Model {m} timed out"
-                    continue
-                except Exception as e:
-                    last_err = f"Model {m} failed: {str(e)}"
-                    continue
-
-            if not content:
-                raise RuntimeError(last_err or "All Gemini models unavailable due to high demand")
+                    "responseMimeType": "application/json",
+                },
+            }
+            try:
+                resp = await client.post(native_url, json=native_body)
+                if resp.status_code != 200:
+                    error_text = resp.text[:500]
+                    raise RuntimeError(f"Gemini API error ({resp.status_code}): {error_text}")
+                data = resp.json()
+                content = data["candidates"][0]["content"]["parts"][0]["text"]
+                used_model_name = gemini_model
+            except httpx.TimeoutException:
+                raise RuntimeError("Gemini model request timed out after 14 seconds")
+            except Exception as e:
+                err_msg = str(e) or type(e).__name__
+                raise RuntimeError(f"Gemini model request failed: {err_msg}")
 
         # Case B: Standard OpenAI-compatible provider (OpenAI, Groq, OpenRouter, DeepSeek)
         else:
