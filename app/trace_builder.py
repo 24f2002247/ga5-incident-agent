@@ -140,7 +140,9 @@ def build_otlp_trace(
             make_attr("ga5.run.id", run_id),
             make_attr("ga5.public.marker", public_marker),
             make_attr("ga5.action.id", act_id),
+            make_attr("action.id", act_id),
             make_attr("gen_ai.tool.name", tool_name),
+            make_attr("tool.name", tool_name),
             make_attr("gen_ai.tool.call.id", first_d.call_id),
             make_attr("gen_ai.operation.name", "execute_tool"),
         ]
@@ -168,9 +170,12 @@ def build_otlp_trace(
                 make_attr("ga5.run.id", run_id),
                 make_attr("ga5.public.marker", public_marker),
                 make_attr("ga5.action.id", act_id),
+                make_attr("action.id", act_id),
                 make_attr("ga5.attempt", attempt_num),
                 make_attr("http.request.method", "POST"),
+                make_attr("http.method", "POST"),
                 make_attr("http.request.resend_count", attempt_num - 1),
+                make_attr("http.resend_count", attempt_num - 1),
             ]
 
             span_status_code = 1  # default OK
@@ -179,8 +184,11 @@ def build_otlp_trace(
             if receipt:
                 client_attrs.append(make_attr("ga5.receipt.id", receipt.receipt_id))
                 client_attrs.append(make_attr("ga5.receipt.nonce", receipt.nonce))
+                client_attrs.append(make_attr("receipt.id", receipt.receipt_id))
+                client_attrs.append(make_attr("receipt.nonce", receipt.nonce))
                 if receipt.status is not None:
                     client_attrs.append(make_attr("http.response.status_code", receipt.status))
+                    client_attrs.append(make_attr("http.status_code", receipt.status))
 
                 if receipt.status == 503:
                     span_status_code = 2  # ERROR
@@ -195,6 +203,8 @@ def build_otlp_trace(
                 # If no receipt yet (pending attempt)
                 client_attrs.append(make_attr("ga5.receipt.id", "pending"))
                 client_attrs.append(make_attr("ga5.receipt.nonce", "pending"))
+                client_attrs.append(make_attr("receipt.id", "pending"))
+                client_attrs.append(make_attr("receipt.nonce", "pending"))
 
             if error_type:
                 client_attrs.append(make_attr("error.type", error_type))
@@ -249,10 +259,12 @@ def build_otlp_trace(
         ]
         app_id = (app_rec.approval_id if app_rec else None) or (approval_receipt.approval_id if approval_receipt else None) or "app_unknown"
         gate_attrs.append(make_attr("ga5.approval.id", app_id))
+        gate_attrs.append(make_attr("approval.id", app_id))
 
         app_nonce = (approval_receipt.nonce if approval_receipt else (app_rec.nonce if app_rec and app_rec.nonce else None))
         if app_nonce:
             gate_attrs.append(make_attr("ga5.approval.nonce", app_nonce))
+            gate_attrs.append(make_attr("approval.nonce", app_nonce))
 
         gate_span: Dict[str, Any] = {
             "traceId": trace_id,

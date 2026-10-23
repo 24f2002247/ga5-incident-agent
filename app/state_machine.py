@@ -170,6 +170,9 @@ async def handle_initial_incident(
             # Changed content conflict
             raise HTTPException(status_code=409, detail="Run ID already exists with different request content.")
 
+    # Commit read transaction to release connection back to pool while awaiting external model
+    db.commit()
+
     # Call AI incident planner
     try:
         plan: ModelPlanResult = await plan_incident(req)
@@ -423,6 +426,29 @@ def handle_receipt(db: Session, run_id: str, req: ReceiptRequest) -> Dict[str, A
             return format_run_response(run)
 
         planned_effect_args = json.loads(run.planned_effect_arguments_json or "{}")
+
+        # Check scaling limit rule: "When a service is already at its permitted scaling limit, page the owner instead of scaling."
+        all_receipts = db.query(ReceiptRecord).filter(ReceiptRecord.run_id == run_id).all()
+        diagnostic_scaling_limit = any(
+            (r.result_class and any(term in r.result_class.lower() for term in ["limit", "max", "capacity", "scaling_limit"]))
+            or (r.error_type and any(term in r.error_type.lower() for term in ["limit", "max", "capacity"]))
+            for r in all_receipts
+        )
+
+        catalog_tools = json.loads(run.tool_catalog_json or "[]")
+        catalog_names = [t["name"] if isinstance(t, dict) else t for t in catalog_tools]
+        available_effects = policy_data.get("effectTools") or catalog_names
+
+        if diagnostic_scaling_limit and planned_effect_tool in ["scale_service", "scale_up", "autoscale"]:
+            for candidate in ["page_service_owner", "page_owner", "alert_owner", "escalate_to_owner"]:
+                if candidate in available_effects:
+                    planned_effect_tool = candidate
+                    # Extract service name from previous args or agent_name
+                    svc = planned_effect_args.get("service") or run.agent_name
+                    planned_effect_args = {"service": svc, "reason": "Scaling limit reached"}
+                    run.planned_effect_tool = candidate
+                    run.planned_effect_arguments_json = canonical_json(planned_effect_args)
+                    break
 
         # Check if effect requires approval
         if planned_effect_tool in approval_required_tools:

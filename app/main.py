@@ -61,7 +61,7 @@ def root():
     return {
         "status": "ok",
         "service": "ga5-incident-agent",
-        "version": "2.1.4",
+        "version": "2.2.0",
         "endpoints": [
             "/health",
             "/v2/incidents",
@@ -73,7 +73,7 @@ def root():
 
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    return {"status": "ok", "version": "2.1.4"}
+    return {"status": "ok", "version": "2.2.0"}
 
 
 @app.post("/v2/incidents")

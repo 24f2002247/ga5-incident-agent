@@ -434,6 +434,50 @@ def test_timeout_suppression(mock_plan, client):
     assert "page_service_owner" in final["suppressed"]
 
 
+# 12b. Diagnostic outcome showing scaling limit triggers page_service_owner instead of scaling
+@patch("app.state_machine.plan_incident")
+def test_scaling_limit_receipt_triggers_page_owner(mock_plan, client):
+    mock_plan.return_value = ModelPlanResult(
+        root_cause="traffic_spike_saturation",
+        evidence=["ev_load", "ev_timeout"],
+        diagnostics=[
+            {"toolName": "query_db_pool", "arguments": {"service": "auth-gateway"}, "evidence": ["ev_load"]},
+        ],
+        planned_effect_tool="scale_service",
+        planned_effect_arguments={"service": "auth-gateway", "replicas": 10},
+        model_name="gpt-4o-mini",
+    )
+
+    req = make_sample_request("run_scale_limit_001")
+    res = client.post("/v2/incidents", json=req)
+    assert res.status_code == 200
+    d = res.json()["dispatches"][0]
+
+    # Grader reports diagnostic outcome with scaling limit reached
+    r = client.post(
+        "/v2/incidents/run_scale_limit_001/receipts",
+        json={
+            "receiptId": "rcpt_scale_limit_1",
+            "outcomes": [{
+                "actionId": d["actionId"],
+                "callId": d["callId"],
+                "attempt": 1,
+                "status": 200,
+                "resultClass": "scaling_limit_reached",
+                "nonce": "nonce_scale_lim",
+            }],
+        },
+    )
+    assert r.status_code == 200
+    resp_data = r.json()
+    assert resp_data["status"] == "waiting"
+    effect_dispatch = resp_data["dispatches"][0]
+    assert effect_dispatch["phase"] == "effect"
+    # Must have switched from scale_service to page_service_owner!
+    assert effect_dispatch["toolName"] == "page_service_owner"
+    assert effect_dispatch["arguments"]["reason"] == "Scaling limit reached"
+
+
 # 13, 14, 15. Approval gate for destructive effect (approval required, reject vs approve)
 @patch("app.state_machine.plan_incident")
 def test_approval_gate_and_execution(mock_plan, client):

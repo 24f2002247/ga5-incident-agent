@@ -8,11 +8,19 @@ connect_args = {}
 if db_url.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
 
-engine = create_engine(
-    db_url,
-    connect_args=connect_args,
-    pool_pre_ping=True,
-)
+engine_kwargs = {
+    "connect_args": connect_args,
+    "pool_pre_ping": True,
+}
+
+if not db_url.startswith("sqlite"):
+    engine_kwargs.update({
+        "pool_size": 25,
+        "max_overflow": 25,
+        "pool_timeout": 10,
+    })
+
+engine = create_engine(db_url, **engine_kwargs)
 
 # Enable WAL mode for SQLite for better concurrency
 if db_url.startswith("sqlite"):
