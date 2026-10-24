@@ -61,7 +61,7 @@ def root():
     return {
         "status": "ok",
         "service": "ga5-incident-agent",
-        "version": "2.4.1",
+        "version": "2.4.2",
         "endpoints": [
             "/health",
             "/v2/incidents",
@@ -73,36 +73,38 @@ def root():
 
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    return {"status": "ok", "version": "2.4.1"}
+    return {"status": "ok", "version": "2.4.2"}
 
 
 @app.get("/_grader_debug")
 def grader_debug(db: Session = Depends(get_db)):
-    from app.models import RunRecord
-    runs = db.query(RunRecord).order_by(RunRecord.created_at.desc()).limit(15).all()
-    out = []
-    for r in runs:
-        out.append({
-            "run_id": r.run_id,
-            "created_at": str(r.created_at),
-            "model_name": r.model_name,
-            "root_cause": r.diagnosis_root_cause,
-            "evidence": json.loads(r.diagnosis_evidence_json),
-            "dispatches": [
-                {
-                    "tool": d.tool_name,
-                    "phase": d.phase,
-                    "args": json.loads(d.arguments_json),
-                    "evidence": json.loads(d.evidence_json),
-                } for d in r.dispatches
-            ],
-            "planned_effect": r.planned_effect_tool,
-            "receipts_count": len(r.receipts),
-            "status": r.status,
-            "tool_catalog": json.loads(r.tool_catalog_json) if r.tool_catalog_json else [],
-            "policy": json.loads(r.policy_json) if r.policy_json else {},
-        })
-    return out
+    import traceback
+    try:
+        from app.models import RunRecord
+        runs = db.query(RunRecord).order_by(RunRecord.created_at.desc()).limit(15).all()
+        out = []
+        for r in runs:
+            out.append({
+                "run_id": r.run_id,
+                "created_at": str(r.created_at),
+                "model_name": r.model_name,
+                "root_cause": r.diagnosis_root_cause,
+                "status": r.status,
+                "receipts_count": len(r.receipts),
+                "evidence": r.diagnosis_evidence_json,
+                "dispatches": [
+                    {
+                        "tool": d.tool_name,
+                        "phase": d.phase,
+                        "args": d.arguments_json,
+                        "evidence": d.evidence_json,
+                    } for d in r.dispatches
+                ],
+                "planned_effect": r.planned_effect_tool,
+            })
+        return out
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 
 @app.post("/v2/incidents")
