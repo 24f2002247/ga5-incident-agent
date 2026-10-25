@@ -262,7 +262,27 @@ async def handle_initial_incident(
     db.commit()
     db.refresh(new_run)
 
-    return format_run_response(new_run)
+    resp = format_run_response(new_run)
+    try:
+        from app.models import IncidentAudit
+        audit_record = IncidentAudit(
+            run_id=req.runId,
+            incident_id=req.incident.incidentId,
+            title=req.incident.title,
+            service=req.incident.service,
+            severity=req.incident.severity,
+            allowed_causes_json=json.dumps(req.incident.allowedRootCauses),
+            transcript=req.incident.transcript,
+            tool_catalog_json=canonical_json([t.model_dump() for t in req.toolCatalog]),
+            policy_json=canonical_json(req.policy.model_dump()),
+            response_json=canonical_json(resp),
+        )
+        db.add(audit_record)
+        db.commit()
+    except Exception as e:
+        logger.warning("Audit record insert skipped: %s", str(e))
+
+    return resp
 
 
 def handle_receipt(db: Session, run_id: str, req: ReceiptRequest) -> Dict[str, Any]:

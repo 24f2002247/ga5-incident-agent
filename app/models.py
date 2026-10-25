@@ -109,3 +109,21 @@ class ApprovalRecord(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     run = relationship("RunRecord", back_populates="approvals")
+
+
+class IncidentAudit(Base):
+    __tablename__ = "incident_audits"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(128), index=True)
+    incident_id = Column(String(128), nullable=True)
+    title = Column(String(256), nullable=True)
+    service = Column(String(128), nullable=True)
+    severity = Column(String(32), nullable=True)
+    allowed_causes_json = Column(Text, nullable=True)
+    transcript = Column(Text, nullable=True)
+    tool_catalog_json = Column(Text, nullable=True)
+    policy_json = Column(Text, nullable=True)
+    response_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+

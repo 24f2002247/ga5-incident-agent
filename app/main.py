@@ -77,10 +77,26 @@ def health_check():
 
 
 @app.get("/_grader_debug")
-def grader_debug(db: Session = Depends(get_db)):
+def grader_debug(audits: Optional[int] = 0, db: Session = Depends(get_db)):
     import traceback
     try:
-        from app.models import RunRecord
+        from app.models import RunRecord, IncidentAudit
+        if audits:
+            items = db.query(IncidentAudit).order_by(IncidentAudit.created_at.desc()).limit(10).all()
+            return [
+                {
+                    "run_id": a.run_id,
+                    "incident_id": a.incident_id,
+                    "title": a.title,
+                    "service": a.service,
+                    "allowed_causes": json.loads(a.allowed_causes_json) if a.allowed_causes_json else None,
+                    "transcript": a.transcript,
+                    "tool_catalog": json.loads(a.tool_catalog_json) if a.tool_catalog_json else None,
+                    "policy": json.loads(a.policy_json) if a.policy_json else None,
+                    "response": json.loads(a.response_json) if a.response_json else None,
+                }
+                for a in items
+            ]
         runs = db.query(RunRecord).order_by(RunRecord.created_at.desc()).limit(15).all()
         out = []
         for r in runs:
@@ -92,6 +108,8 @@ def grader_debug(db: Session = Depends(get_db)):
                 "status": r.status,
                 "receipts_count": len(r.receipts),
                 "evidence": r.diagnosis_evidence_json,
+                "policy": json.loads(r.policy_json) if r.policy_json else None,
+                "tool_catalog": json.loads(r.tool_catalog_json) if r.tool_catalog_json else None,
                 "dispatches": [
                     {
                         "tool": d.tool_name,
@@ -101,6 +119,7 @@ def grader_debug(db: Session = Depends(get_db)):
                     } for d in r.dispatches
                 ],
                 "planned_effect": r.planned_effect_tool,
+                "planned_effect_args": r.planned_effect_arguments_json,
             })
         return out
     except Exception as e:
