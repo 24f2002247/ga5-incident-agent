@@ -206,13 +206,6 @@ def build_otlp_trace(
                 elif receipt.status and receipt.status >= 400:
                     span_status_code = 2
                     error_type = str(receipt.status)
-            else:
-                # If no receipt yet (pending attempt)
-                client_attrs.append(make_attr("ga5.receipt.id", "pending"))
-                client_attrs.append(make_attr("ga5.receipt.nonce", "pending"))
-                client_attrs.append(make_attr("receipt.id", "pending"))
-                client_attrs.append(make_attr("receipt.nonce", "pending"))
-
             if error_type:
                 client_attrs.append(make_attr("error.type", error_type))
 
@@ -358,12 +351,6 @@ def build_otlp_trace(
                 elif receipt.status and receipt.status >= 400:
                     span_status_code = 2
                     error_type = str(receipt.status)
-            else:
-                client_attrs.append(make_attr("ga5.receipt.id", "pending"))
-                client_attrs.append(make_attr("ga5.receipt.nonce", "pending"))
-                client_attrs.append(make_attr("receipt.id", "pending"))
-                client_attrs.append(make_attr("receipt.nonce", "pending"))
-
             if error_type:
                 client_attrs.append(make_attr("error.type", error_type))
 
