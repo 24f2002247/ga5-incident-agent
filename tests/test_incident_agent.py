@@ -287,6 +287,10 @@ def test_parallel_diagnostics_and_join_links(mock_plan, client):
     assert r3.status_code == 200
     final_data = r3.json()
     assert final_data["status"] == "completed"
+    assert "actionLog" in final_data
+    assert "receiptLog" in final_data
+    assert len(final_data["actionLog"]) >= 3
+    assert len(final_data["receiptLog"]) >= 3
 
     # Inspect OTLP join span
     otlp = final_data["otlp"]
@@ -1045,7 +1049,7 @@ def test_generate_heuristic_plan_resilience():
     assert plan.planned_effect_tool in req.policy.effectTools
 
 
-# 30. Waiting response contains actionLog, receiptLog, tracestate, and no effect tools
+# 30. Waiting response excludes actionLog/receiptLog, preserves tracestate header, and no effect tools
 @patch("app.state_machine.plan_incident")
 def test_waiting_response_action_receipt_log_and_no_effect_tools(mock_plan, client):
     mock_plan.return_value = ModelPlanResult(
@@ -1070,15 +1074,13 @@ def test_waiting_response_action_receipt_log_and_no_effect_tools(mock_plan, clie
     data = res.json()
 
     assert data["status"] == "waiting"
-    assert "actionLog" in data
-    assert "receiptLog" in data
-    assert isinstance(data["actionLog"], list)
-    assert len(data["actionLog"]) == 1
-    assert data["receiptLog"] == []
+    # Spec Section 2: Waiting responses omit actionLog and receiptLog
+    assert "actionLog" not in data
+    assert "receiptLog" not in data
 
-    # Check tracestate preserved
-    assert data["dispatches"][0]["tracestate"] == "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7"
-    assert data["actionLog"][0]["tracestate"] == "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7"
+    # Spec Section 2: tracestate is preserved in HTTP headers, not in dispatch item body
+    assert "tracestate" not in data["dispatches"][0]
+    assert res.headers.get("tracestate") == "congo=t61rcWkgMzE,rojo=00f067aa0ba902b7"
 
     # Verify no effect tools dispatched
     for d in data["dispatches"]:

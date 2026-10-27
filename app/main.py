@@ -130,30 +130,46 @@ def grader_debug(audits: Optional[int] = 0, db: Session = Depends(get_db)):
 @app.post("/v2/incidents")
 async def create_incident(
     req: IncidentRequest,
+    response: Response,
     traceparent: Optional[str] = Header(None),
     tracestate: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
-    return await handle_initial_incident(
+    result = await handle_initial_incident(
         db=db,
         req=req,
         incoming_traceparent=traceparent,
         incoming_tracestate=tracestate,
     )
+    if tracestate:
+        response.headers["tracestate"] = tracestate
+    return result
 
 
 @app.post("/v2/incidents/{runId}/receipts")
 def submit_receipt(
     runId: str,
     req: ReceiptRequest,
+    response: Response,
     db: Session = Depends(get_db),
 ):
-    return handle_receipt(db=db, run_id=runId, req=req)
+    result = handle_receipt(db=db, run_id=runId, req=req)
+    from app.models import RunRecord
+    run = db.query(RunRecord).filter(RunRecord.run_id == runId).first()
+    if run and run.tracestate:
+        response.headers["tracestate"] = run.tracestate
+    return result
 
 
 @app.get("/v2/incidents/{runId}")
 def get_incident(
     runId: str,
+    response: Response,
     db: Session = Depends(get_db),
 ):
-    return get_incident_state(db=db, run_id=runId)
+    result = get_incident_state(db=db, run_id=runId)
+    from app.models import RunRecord
+    run = db.query(RunRecord).filter(RunRecord.run_id == runId).first()
+    if run and run.tracestate:
+        response.headers["tracestate"] = run.tracestate
+    return result

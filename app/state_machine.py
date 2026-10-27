@@ -46,8 +46,6 @@ def build_action_log(dispatches: List[DispatchRecord], tracestate: Optional[str]
             "attempt": d.attempt,
             "traceparent": d.traceparent,
         }
-        if tracestate:
-            item["tracestate"] = tracestate
         if d.approval_id:
             item["approvalId"] = d.approval_id
         if d.approval_nonce:
@@ -127,8 +125,6 @@ def format_run_response(run: RunRecord) -> Dict[str, Any]:
             "attempt": d.attempt,
             "traceparent": d.traceparent,
         }
-        if run.tracestate:
-            item["tracestate"] = run.tracestate
         if d.approval_id:
             item["approvalId"] = d.approval_id
         if d.approval_nonce:
@@ -152,8 +148,6 @@ def format_run_response(run: RunRecord) -> Dict[str, Any]:
         "diagnosis": diagnosis,
         "dispatches": dispatches_data,
         "approvals": approvals_data,
-        "actionLog": action_log,
-        "receiptLog": receipt_log,
     }
 
 

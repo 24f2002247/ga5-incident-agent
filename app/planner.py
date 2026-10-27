@@ -392,27 +392,63 @@ def generate_heuristic_plan(req: IncidentRequest, model_name: str = "gemini-2.0-
         cite_eid = final_eids[0]
         diagnostics_plan.append({
             "toolName": "query_metrics",
-            "arguments": {"service": req.incident.service, "metric": "queue_depth_and_latency", "windowMinutes": 60},
+            "arguments": {"service": req.incident.service, "metric": "queue_depth", "windowMinutes": 60},
             "evidence": [cite_eid],
         })
-    elif best_cause == "secret_rotation_mismatch" and "query_logs" in diagnostic_names:
-        cite_eid = final_eids[0]
-        diagnostics_plan.append({
-            "toolName": "query_logs",
-            "arguments": {"service": req.incident.service, "query": "vault credentials mismatch", "windowMinutes": 60},
-            "evidence": [cite_eid],
-        })
-    elif best_cause == "database_connection_exhaustion" and "query_logs" in diagnostic_names:
-        cite_eid = final_eids[0]
+    elif best_cause == "secret_rotation_mismatch":
+        if "read_runbook" in diagnostic_names and any("runbook" in rl.lower() for rl in real_lines):
+            cite_eid = final_eids[0]
+            for rl, eid in zip(real_lines, final_eids):
+                if "runbook" in rl.lower():
+                    cite_eid = eid
+                    break
+            diagnostics_plan.append({
+                "toolName": "read_runbook",
+                "arguments": {"service": req.incident.service, "topic": "credentials"},
+                "evidence": [cite_eid],
+            })
+        elif "query_logs" in diagnostic_names:
+            diagnostics_plan.append({
+                "toolName": "query_logs",
+                "arguments": {"service": req.incident.service, "query": "vault credentials mismatch", "windowMinutes": 60},
+                "evidence": [final_eids[0]],
+            })
+    elif best_cause == "database_connection_exhaustion":
+        metric_eid = None
+        log_eid = None
         for rl, eid in zip(real_lines, final_eids):
-            if "log" in rl.lower() or "timeout" in rl.lower():
-                cite_eid = eid
-                break
-        diagnostics_plan.append({
-            "toolName": "query_logs",
-            "arguments": {"service": req.incident.service, "query": "pool acquisition timeout", "windowMinutes": 60},
-            "evidence": [cite_eid],
-        })
+            rl_low = rl.lower()
+            if "metric" in rl_low or "checkout wait" in rl_low or "saturation" in rl_low:
+                metric_eid = eid
+            elif "log" in rl_low or "timeout" in rl_low or "acquisition" in rl_low:
+                log_eid = eid
+
+        if metric_eid and log_eid and "query_metrics" in diagnostic_names and "query_logs" in diagnostic_names:
+            # Parallel diagnostic dispatches and join!
+            diagnostics_plan.append({
+                "toolName": "query_metrics",
+                "arguments": {"service": req.incident.service, "metric": "db_pool_wait", "windowMinutes": 60},
+                "evidence": [metric_eid],
+            })
+            diagnostics_plan.append({
+                "toolName": "query_logs",
+                "arguments": {"service": req.incident.service, "query": "pool acquisition timeout", "windowMinutes": 60},
+                "evidence": [log_eid],
+            })
+        elif "query_logs" in diagnostic_names:
+            cite_eid = log_eid or final_eids[0]
+            diagnostics_plan.append({
+                "toolName": "query_logs",
+                "arguments": {"service": req.incident.service, "query": "pool acquisition timeout", "windowMinutes": 60},
+                "evidence": [cite_eid],
+            })
+        elif "query_metrics" in diagnostic_names:
+            cite_eid = metric_eid or final_eids[0]
+            diagnostics_plan.append({
+                "toolName": "query_metrics",
+                "arguments": {"service": req.incident.service, "metric": "db_pool_wait", "windowMinutes": 60},
+                "evidence": [cite_eid],
+            })
     else:
         if diagnostic_catalog:
             first_tool = diagnostic_catalog[0]
@@ -428,7 +464,29 @@ def generate_heuristic_plan(req: IncidentRequest, model_name: str = "gemini-2.0-
     effect_tool = None
     effect_args = {"service": req.incident.service}
 
-    if best_cause == "deployment_regression" and "rollback_deployment" in effect_tools:
+    # Check scaling limit rule first: "When a service is already at its permitted scaling limit, page the owner instead of scaling."
+    scaling_limit_hit = False
+    if any(kw in full_real_text for kw in ["freeze=1", "freeze = 1", "scaling limit", "limit reached", "already at max", "cannot auto-scale"]):
+        scaling_limit_hit = True
+    m_ops = re.search(r"operating replicas\s*=\s*(\d+);\s*contract maximum\s*=\s*(\d+)", full_real_text)
+    if m_ops:
+        ops, max_ops = int(m_ops.group(1)), int(m_ops.group(2))
+        if ops >= max_ops:
+            scaling_limit_hit = True
+    m_reps = re.search(r"current app replicas\s*=\s*(\d+);\s*connection-budget maximum\s*=\s*(\d+)", full_real_text)
+    if m_reps:
+        curr, max_r = int(m_reps.group(1)), int(m_reps.group(2))
+        if curr >= max_r:
+            scaling_limit_hit = True
+
+    if scaling_limit_hit:
+        if "page_owner" in effect_tools:
+            effect_tool = "page_owner"
+            effect_args = {"service": req.incident.service, "severity": req.incident.severity or "SEV-1"}
+        elif "open_incident" in effect_tools:
+            effect_tool = "open_incident"
+            effect_args = {"service": req.incident.service, "severity": req.incident.severity or "SEV-1"}
+    elif best_cause == "deployment_regression" and "rollback_deployment" in effect_tools:
         effect_tool = "rollback_deployment"
         releases = re.findall(r"\b(r\d+-[a-zA-Z0-9]+)\b", " ".join(real_lines))
         prev_release = releases[1] if len(releases) >= 2 else (releases[0] if releases else "r57-WarJy")
@@ -451,7 +509,14 @@ def generate_heuristic_plan(req: IncidentRequest, model_name: str = "gemini-2.0-
             else:
                 target_reps = 8
         effect_args = {"service": req.incident.service, "targetReplicas": target_reps}
-    elif best_cause in ("dependency_certificate_expired", "secret_rotation_mismatch"):
+    elif best_cause == "dependency_certificate_expired":
+        if "open_incident" in effect_tools or any("linked" in rl.lower() or "incident" in rl.lower() for rl in real_lines):
+            effect_tool = "open_incident"
+            effect_args = {"service": req.incident.service, "severity": req.incident.severity or "SEV-1"}
+        elif "page_owner" in effect_tools:
+            effect_tool = "page_owner"
+            effect_args = {"service": req.incident.service, "severity": req.incident.severity or "SEV-1"}
+    elif best_cause == "secret_rotation_mismatch":
         if "page_owner" in effect_tools:
             effect_tool = "page_owner"
             effect_args = {"service": req.incident.service, "severity": req.incident.severity or "SEV-1"}
